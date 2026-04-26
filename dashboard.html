@@ -18,9 +18,6 @@
       --good: #34d399;
       --bad: #f87171;
       --warn: #fbbf24;
-      --line-prod: #6aa9ff;
-      --line-ff: #f0a04b;
-      --line-total: #a78bfa;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -28,7 +25,7 @@
     header { display:flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
     h1 { font-size: 22px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
     .sub { color: var(--muted); font-size: 13px; }
-    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0; }
     .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
     .kpi .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
     .kpi .value { font-size: 24px; font-weight: 600; }
@@ -38,8 +35,6 @@
     .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
     .panel h2 { margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: var(--fg); letter-spacing: 0.01em; }
     .panel .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
-    .row { display: grid; grid-template-columns: 1fr; gap: 16px; }
-    .row.two { grid-template-columns: 1fr 1fr; }
     canvas { max-width: 100%; }
     .chart-box { position: relative; height: 360px; }
     .chart-box.tall { height: 420px; }
@@ -56,10 +51,6 @@
     .pos { color: var(--good); }
     .neg { color: var(--bad); }
     .footer { color: var(--muted); font-size: 11px; margin-top: 24px; text-align: center; }
-    @media (max-width: 900px) {
-      .kpis { grid-template-columns: 1fr 1fr; }
-      .row.two { grid-template-columns: 1fr; }
-    }
   </style>
 </head>
 <body>
@@ -76,7 +67,7 @@
 
     <section class="panel">
       <h2>Productivity trend — weekly efficiency</h2>
-      <div class="desc">Pieces per hour, three views, all weeks. Use the toggles to compare current vs prior years.</div>
+      <div class="desc">Pieces per hour, three views, all weeks.</div>
       <div class="toolbar">
         <label>Range:</label>
         <select id="range-select">
@@ -94,7 +85,7 @@
       <h2>YoY cost savings (vs LY same-week efficiency)</h2>
       <div class="desc">
         Hypothetical labor cost if we'd run this year's volume at last year's pieces-per-total-hour efficiency, minus actual labor.
-        Formula per week: <code>(Volume / LY&nbsp;Eff<sub>258</sub> &minus; Total Hours) &times; $25.53</code>.
+        Per week: <code>(Volume / LY&nbsp;Eff<sub>258</sub> &minus; Total Hours) &times; $25.53</code>.
         Bars above zero = savings vs LY; below zero = overrun.
       </div>
       <div class="toolbar">
@@ -106,6 +97,24 @@
         </select>
       </div>
       <div class="chart-box tall"><canvas id="chart-savings"></canvas></div>
+    </section>
+
+    <section class="panel">
+      <h2>YoY improvement in basis points (Pieces / Total Hours, row 258)</h2>
+      <div class="desc">
+        Per-week YoY % change in efficiency, expressed in bps (1% = 100 bps).
+        Formula: <code>((CY&nbsp;Eff<sub>258</sub> / LY&nbsp;Eff<sub>258</sub>) &minus; 1) &times; 10,000</code>.
+        Bars above zero = year-over-year improvement.
+      </div>
+      <div class="toolbar">
+        <label>Range:</label>
+        <select id="bps-range">
+          <option value="fy26" selected>FY26 by week</option>
+          <option value="fy25">FY25 by week</option>
+          <option value="all">FY25–FY26 (all weeks with LY)</option>
+        </select>
+      </div>
+      <div class="chart-box tall"><canvas id="chart-bps"></canvas></div>
     </section>
 
     <section class="panel">
@@ -140,6 +149,8 @@
     const fmtNum = (n, d=2) => n == null ? "—" : Number(n).toFixed(d);
     const fmtInt = n => n == null ? "—" : Math.round(n).toLocaleString();
     const fmtPct = n => n == null ? "—" : (n*100).toFixed(1) + "%";
+    const fmtBps = n => n == null ? "—" : (n >= 0 ? "+" : "") + Math.round(n).toLocaleString() + " bps";
+    const yoyBps = (cy, ly) => (cy == null || ly == null || ly === 0) ? null : ((cy / ly) - 1) * 10000;
 
     function applyRange(weeks, range) {
       switch(range) {
@@ -3267,11 +3278,13 @@ render();
       buildKPIs();
       buildEffChart();
       buildSavingsChart();
+      buildBpsChart();
       buildCYLYChart();
       buildTable();
 
       document.getElementById("range-select").addEventListener("change", buildEffChart);
       document.getElementById("savings-range").addEventListener("change", buildSavingsChart);
+      document.getElementById("bps-range").addEventListener("change", buildBpsChart);
       document.getElementById("fy-filter").addEventListener("change", buildTable);
       document.getElementById("dl-csv").addEventListener("click", downloadCSV);
     }
@@ -3279,44 +3292,57 @@ render();
     // -------- KPIs --------
     function buildKPIs() {
       const weeks = DATA.weeks;
-      // Latest week with data on row 258
       const completed = weeks.filter(w => w.eff_total_258 != null);
       const latest = completed[completed.length - 1];
-      const prior  = completed[completed.length - 2];
 
-      // 4w rolling efficiency CY (row 258)
       const last4 = completed.slice(-4);
       const avg4 = last4.reduce((a, w) => a + w.eff_total_258, 0) / last4.length;
       const ly4 = last4.map(w => w.ly_eff_total_258).filter(v => v != null);
       const avg4LY = ly4.length ? ly4.reduce((a,b)=>a+b,0)/ly4.length : null;
 
-      // FY26 cumulative wage savings + hours saved
       const fy26 = weeks.filter(w => w.fy === "FY2026" && w.wage_savings_vs_ly != null);
       const ytdSavings = fy26.reduce((a, w) => a + w.wage_savings_vs_ly, 0);
       const ytdHoursSaved = fy26.reduce((a, w) => a + w.hours_saved_vs_ly, 0);
 
-      const wow = (latest && prior) ? (latest.eff_total_258 - prior.eff_total_258) : null;
       const yoyDelta = (latest && latest.ly_eff_total_258 != null)
         ? (latest.eff_total_258 - latest.ly_eff_total_258) : null;
-      const yoyPct = (latest && latest.ly_eff_total_258 != null && latest.ly_eff_total_258 !== 0)
-        ? (latest.eff_total_258 - latest.ly_eff_total_258) / latest.ly_eff_total_258 : null;
+      const latestBps = latest ? yoyBps(latest.eff_total_258, latest.ly_eff_total_258) : null;
+      const avg4Bps = (avg4LY != null && avg4LY !== 0) ? yoyBps(avg4, avg4LY) : null;
+
+      // FY26 hr-weighted average YoY in bps
+      const fy26ForBps = weeks.filter(w => w.fy === "FY2026" && w.eff_total_258 != null && w.ly_eff_total_258);
+      let fy26AvgBps = null;
+      if (fy26ForBps.length) {
+        const wSum = fy26ForBps.reduce((a, w) => a + (w.total_hours_253 || 0), 0);
+        if (wSum > 0) {
+          fy26AvgBps = fy26ForBps.reduce((a, w) => a + yoyBps(w.eff_total_258, w.ly_eff_total_258) * (w.total_hours_253 || 0), 0) / wSum;
+        } else {
+          fy26AvgBps = fy26ForBps.reduce((a, w) => a + yoyBps(w.eff_total_258, w.ly_eff_total_258), 0) / fy26ForBps.length;
+        }
+      }
 
       const cards = [
         {
           label: `Latest week eff (${latest ? latest.week_start : "—"})`,
           value: fmtNum(latest && latest.eff_total_258, 2),
-          deltaText: yoyDelta != null
-            ? `${yoyDelta >= 0 ? "+" : ""}${fmtNum(yoyDelta,2)} vs LY (${fmtPct(yoyPct)})`
+          deltaText: latestBps != null
+            ? `${fmtBps(latestBps)} vs LY (${yoyDelta >= 0 ? "+" : ""}${fmtNum(yoyDelta,2)})`
             : "—",
-          deltaClass: yoyDelta == null ? "" : (yoyDelta >= 0 ? "good" : "bad"),
+          deltaClass: latestBps == null ? "" : (latestBps >= 0 ? "good" : "bad"),
         },
         {
           label: "4-week avg eff (Pieces / Total Hr)",
           value: fmtNum(avg4, 2),
-          deltaText: avg4LY != null
-            ? `${(avg4-avg4LY) >= 0 ? "+" : ""}${fmtNum(avg4-avg4LY,2)} vs LY 4-wk avg`
+          deltaText: avg4Bps != null
+            ? `${fmtBps(avg4Bps)} vs LY 4-wk avg`
             : "—",
-          deltaClass: avg4LY == null ? "" : ((avg4-avg4LY) >= 0 ? "good" : "bad"),
+          deltaClass: avg4Bps == null ? "" : (avg4Bps >= 0 ? "good" : "bad"),
+        },
+        {
+          label: "FY26 YTD YoY (hr-weighted)",
+          value: fmtBps(fy26AvgBps),
+          deltaText: fy26AvgBps != null ? `${(fy26AvgBps/100).toFixed(1)}% lift in pieces / total hr` : "—",
+          deltaClass: fy26AvgBps == null ? "" : (fy26AvgBps >= 0 ? "good" : "bad"),
         },
         {
           label: "FY26 YTD wage savings vs LY",
@@ -3345,18 +3371,11 @@ render();
       const weeks = applyRange(DATA.weeks, range);
       const labels = weeks.map(w => w.week_start);
       const ds = (key, label, color) => ({
-        label,
-        data: weeks.map(w => w[key]),
-        borderColor: color,
-        backgroundColor: color + "33",
-        borderWidth: 2,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-        spanGaps: true,
-        tension: 0.25,
+        label, data: weeks.map(w => w[key]),
+        borderColor: color, backgroundColor: color + "33",
+        borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, spanGaps: true, tension: 0.25,
       });
-
-      const cfg = {
+      drawChart("chart-eff", {
         type: "line",
         data: {
           labels,
@@ -3367,8 +3386,7 @@ render();
           ],
         },
         options: chartOptions({ y: { title: "Pieces per hour" } }),
-      };
-      drawChart("chart-eff", cfg);
+      });
     }
 
     // -------- weekly savings bar chart --------
@@ -3383,79 +3401,83 @@ render();
       const vals = weeks.map(w => w.wage_savings_vs_ly);
       const colors = vals.map(v => v == null ? "#888" : (v >= 0 ? "#34d399" : "#f87171"));
 
-      // Cumulative line
       let running = 0;
       const cum = vals.map(v => v == null ? null : (running += v));
 
-      const cfg = {
+      drawChart("chart-savings", {
         type: "bar",
         data: {
           labels,
           datasets: [
-            {
-              type: "bar",
-              label: "Weekly $ saved vs LY",
-              data: vals,
-              backgroundColor: colors,
-              borderWidth: 0,
-              order: 2,
-            },
-            {
-              type: "line",
-              label: "Cumulative savings ($)",
-              data: cum,
-              borderColor: "#fbbf24",
-              backgroundColor: "transparent",
-              borderWidth: 2,
-              pointRadius: 0,
-              tension: 0.25,
-              yAxisID: "y2",
-              order: 1,
-            },
+            { type: "bar", label: "Weekly $ saved vs LY", data: vals, backgroundColor: colors, borderWidth: 0, order: 2 },
+            { type: "line", label: "Cumulative savings ($)", data: cum,
+              borderColor: "#fbbf24", backgroundColor: "transparent",
+              borderWidth: 2, pointRadius: 0, tension: 0.25, yAxisID: "y2", order: 1 },
           ],
         },
         options: chartOptions({
           y: { title: "Weekly $ vs LY", ticks: v => "$" + (v/1000).toFixed(0) + "k" },
-          y2: { title: "Cumulative $", position: "right", grid: false, ticks: v => "$" + (v/1000).toFixed(0) + "k" },
+          y2: { title: "Cumulative $", position: "right", ticks: v => "$" + (v/1000).toFixed(0) + "k" },
           tooltipMoney: true,
         }),
-      };
-      drawChart("chart-savings", cfg);
+      });
+    }
+
+    // -------- YoY bps bar chart --------
+    function buildBpsChart() {
+      const range = document.getElementById("bps-range").value;
+      let weeks;
+      if (range === "fy26") weeks = DATA.weeks.filter(w => w.fy === "FY2026");
+      else if (range === "fy25") weeks = DATA.weeks.filter(w => w.fy === "FY2025");
+      else weeks = DATA.weeks.filter(w => w.ly_eff_total_258 != null);
+
+      const labels = weeks.map(w => w.week_start);
+      const vals = weeks.map(w => yoyBps(w.eff_total_258, w.ly_eff_total_258));
+      const colors = vals.map(v => v == null ? "#888" : (v >= 0 ? "#34d399" : "#f87171"));
+
+      // 4-week trailing average for trendline
+      const trailing = vals.map((_, i) => {
+        const slice = vals.slice(Math.max(0, i - 3), i + 1).filter(v => v != null);
+        return slice.length ? slice.reduce((a, b) => a + b, 0) / slice.length : null;
+      });
+
+      drawChart("chart-bps", {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            { type: "bar", label: "YoY bps (weekly)", data: vals, backgroundColor: colors, borderWidth: 0, order: 2 },
+            { type: "line", label: "4-week trailing avg (bps)", data: trailing,
+              borderColor: "#fbbf24", backgroundColor: "transparent",
+              borderWidth: 2, pointRadius: 0, tension: 0.25, order: 1 },
+          ],
+        },
+        options: chartOptions({
+          y: { title: "YoY change (bps)", ticks: v => v.toLocaleString() },
+          tooltipBps: true,
+        }),
+      });
     }
 
     // -------- CY vs LY same-week efficiency --------
     function buildCYLYChart() {
       const weeks = DATA.weeks.filter(w => w.ly_eff_total_258 != null);
       const labels = weeks.map(w => w.week_start);
-      const cfg = {
+      drawChart("chart-cy-ly", {
         type: "line",
         data: {
           labels,
           datasets: [
-            {
-              label: "CY (Row 258)",
-              data: weeks.map(w => w.eff_total_258),
-              borderColor: "#a78bfa",
-              backgroundColor: "transparent",
-              borderWidth: 2,
-              pointRadius: 0,
-              tension: 0.25,
-            },
-            {
-              label: "LY same week",
-              data: weeks.map(w => w.ly_eff_total_258),
-              borderColor: "#8a98b6",
-              backgroundColor: "transparent",
-              borderWidth: 2,
-              borderDash: [5, 4],
-              pointRadius: 0,
-              tension: 0.25,
-            },
+            { label: "CY (Row 258)", data: weeks.map(w => w.eff_total_258),
+              borderColor: "#a78bfa", backgroundColor: "transparent",
+              borderWidth: 2, pointRadius: 0, tension: 0.25 },
+            { label: "LY same week", data: weeks.map(w => w.ly_eff_total_258),
+              borderColor: "#8a98b6", backgroundColor: "transparent",
+              borderWidth: 2, borderDash: [5, 4], pointRadius: 0, tension: 0.25 },
           ],
         },
         options: chartOptions({ y: { title: "Pieces / Total Hour" } }),
-      };
-      drawChart("chart-cy-ly", cfg);
+      });
     }
 
     // -------- table --------
@@ -3466,11 +3488,13 @@ render();
         <th>Week start</th><th>FY</th><th>Volume</th>
         <th>Prod hrs</th><th>FF hrs</th><th>Total hrs</th>
         <th>R256</th><th>R257</th><th>R258</th>
-        <th>LY R258</th><th>$ saved vs LY</th>
+        <th>LY R258</th><th>YoY (bps)</th><th>$ saved vs LY</th>
       </tr></thead>`;
       const body = weeks.map(w => {
         const sv = w.wage_savings_vs_ly;
         const cls = sv == null ? "" : (sv >= 0 ? "pos" : "neg");
+        const bps = yoyBps(w.eff_total_258, w.ly_eff_total_258);
+        const bpsCls = bps == null ? "" : (bps >= 0 ? "pos" : "neg");
         return `<tr>
           <td>${w.week_start ?? "—"}</td>
           <td>${w.fy ?? ""}</td>
@@ -3482,6 +3506,7 @@ render();
           <td>${fmtNum(w.eff_ff_257,2)}</td>
           <td>${fmtNum(w.eff_total_258,2)}</td>
           <td>${fmtNum(w.ly_eff_total_258,2)}</td>
+          <td class="${bpsCls}">${fmtBps(bps)}</td>
           <td class="${cls}">${fmtMoney(sv)}</td>
         </tr>`;
       }).join("");
@@ -3489,72 +3514,4 @@ render();
     }
 
     function downloadCSV() {
-      const rows = [["week_start","week_end","fy","month","volume_242","prod_hours_251","ff_hours_252","total_hours_253","eff_prod_256","eff_ff_257","eff_total_258","ly_eff_total_258","hours_at_ly_eff","hours_saved_vs_ly","wage_savings_vs_ly"]];
-      DATA.weeks.forEach(w => rows.push([
-        w.week_start, w.week_end, w.fy, w.month,
-        w.volume_242, w.prod_hours_251, w.ff_hours_252, w.total_hours_253,
-        w.eff_prod_256, w.eff_ff_257, w.eff_total_258,
-        w.ly_eff_total_258, w.hours_at_ly_eff, w.hours_saved_vs_ly, w.wage_savings_vs_ly,
-      ]));
-      const csv = rows.map(r => r.map(v => v == null ? "" : (typeof v === "string" && v.includes(",") ? '"'+v+'"' : v)).join(",")).join("\n");
-      const blob = new Blob([csv], { type: "text/csv" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "financial_flash_dashboard_" + DATA.snapshot_date + ".csv";
-      a.click();
-    }
-
-    // -------- chart helpers --------
-    function chartOptions({ y, y2, tooltipMoney } = {}) {
-      const opts = {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { labels: { color: "#e8edf7", boxWidth: 14 } },
-          tooltip: {
-            callbacks: tooltipMoney ? {
-              label: (ctx) => {
-                const v = ctx.parsed.y;
-                if (v == null) return ctx.dataset.label + ": —";
-                return ctx.dataset.label + ": " + fmtMoney(v);
-              }
-            } : undefined,
-          },
-        },
-        scales: {
-          x: {
-            type: "time",
-            time: { unit: "month", tooltipFormat: "yyyy-MM-dd" },
-            ticks: { color: "#8a98b6", maxRotation: 0, autoSkip: true },
-            grid: { color: "rgba(255,255,255,0.04)" },
-          },
-          y: {
-            ticks: {
-              color: "#8a98b6",
-              callback: y && y.ticks ? y.ticks : v => v,
-            },
-            grid: { color: "rgba(255,255,255,0.06)" },
-            title: y && y.title ? { display: true, text: y.title, color: "#8a98b6" } : undefined,
-          },
-        },
-      };
-      if (y2) {
-        opts.scales.y2 = {
-          position: y2.position || "right",
-          ticks: { color: "#8a98b6", callback: y2.ticks || (v => v) },
-          grid: { drawOnChartArea: false },
-          title: y2.title ? { display: true, text: y2.title, color: "#8a98b6" } : undefined,
-        };
-      }
-      return opts;
-    }
-
-    function drawChart(id, cfg) {
-      if (charts[id]) charts[id].destroy();
-      const ctx = document.getElementById(id).getContext("2d");
-      charts[id] = new Chart(ctx, cfg);
-    }
-  </script>
-</body>
-</html>
+      const rows = [["week_start","week_end","fy","month","volume_242","prod_hours_251","ff_hours_252","total_hours_253","eff_prod_256","eff_ff_257","eff_total_258","ly_eff_total_258","yoy_bps_258","hours_at_ly_eff","hours_saved_vs_ly","wage_savings_vs_ly"]]
