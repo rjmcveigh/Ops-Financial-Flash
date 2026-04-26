@@ -179,14 +179,80 @@
     const fmtBps = n => n == null ? "—" : (n >= 0 ? "+" : "") + Math.round(n).toLocaleString() + " bps";
     const yoyBps = (cy, ly) => (cy == null || ly == null || ly === 0) ? null : ((cy / ly) - 1) * 10000;
 
+    const MONTH_NAMES = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
     function applyRange(weeks, range) {
-      switch(range) {
-        case "fy24": return weeks.filter(w => w.fy === "FY2024");
-        case "fy25": return weeks.filter(w => w.fy === "FY2025");
-        case "fy26": return weeks.filter(w => w.fy === "FY2026");
-        case "last52": return weeks.slice(-52);
-        default: return weeks;
+      if (!range || range === "all") return weeks;
+      if (range === "fy24") return weeks.filter(w => w.fy === "FY2024");
+      if (range === "fy25") return weeks.filter(w => w.fy === "FY2025");
+      if (range === "fy26") return weeks.filter(w => w.fy === "FY2026");
+      if (range === "lyhas") return weeks.filter(w => w.ly_eff_total_258 != null);
+      if (range.startsWith("last")) {
+        const n = parseInt(range.slice(4));
+        return weeks.slice(-n);
       }
+      if (range.startsWith("month:")) {
+        const ym = range.slice(6);   // "2026-04"
+        return weeks.filter(w => w.week_start && w.week_start.startsWith(ym));
+      }
+      if (range.startsWith("range:")) {
+        const [from, to] = range.slice(6).split("..");   // "2025-07..2026-04"
+        return weeks.filter(w => {
+          if (!w.week_start) return false;
+          const ym = w.week_start.slice(0, 7);
+          return ym >= from && ym <= to;
+        });
+      }
+      return weeks;
+    }
+
+    // Build the option list (used for all chart range selectors). `opts` lets
+    // a caller include/exclude groups (e.g. bps/savings charts skip FY24 since
+    // there's no LY comparison there).
+    function buildRangeOptions({ includeFY24 = true, includeLyOnly = false, includeAll = true } = {}) {
+      // Unique YYYY-MM keys present in the data, newest first
+      const seen = new Set();
+      const months = [];
+      DATA.weeks.forEach(w => {
+        if (!w.week_start) return;
+        const ym = w.week_start.slice(0, 7);
+        if (!seen.has(ym)) { seen.add(ym); months.push(ym); }
+      });
+      months.reverse();
+
+      const fyGroup = `<optgroup label="Fiscal year">
+        ${includeAll ? `<option value="all">All weeks (FY24–FY26)</option>` : ""}
+        ${includeLyOnly ? `<option value="lyhas">FY25–FY26 (all weeks with LY)</option>` : ""}
+        <option value="fy26">FY26</option>
+        <option value="fy25">FY25</option>
+        ${includeFY24 ? `<option value="fy24">FY24</option>` : ""}
+      </optgroup>`;
+
+      const recentGroup = `<optgroup label="Recent">
+        <option value="last4">Last 4 weeks</option>
+        <option value="last13">Last 13 weeks (quarter)</option>
+        <option value="last26">Last 26 weeks (half)</option>
+        <option value="last52">Last 52 weeks (year)</option>
+      </optgroup>`;
+
+      const monthGroup = `<optgroup label="Month">
+        ${months.map(ym => {
+          const [y, m] = ym.split("-");
+          return `<option value="month:${ym}">${MONTH_NAMES[parseInt(m)]} ${y}</option>`;
+        }).join("")}
+      </optgroup>`;
+
+      return fyGroup + recentGroup + monthGroup;
+    }
+
+    // Populate a single <select> with the range options and set a default value.
+    function populateRangeSelect(id, defaultValue, opts) {
+      const sel = document.getElementById(id);
+      sel.innerHTML = buildRangeOptions(opts);
+      // Hidden helper select for "from-to" range mode lives separately; here
+      // we just set the default if it exists in the option list.
+      const has = Array.from(sel.options).some(o => o.value === defaultValue);
+      sel.value = has ? defaultValue : "all";
     }
 
     // -------- main --------
@@ -198,6 +264,11 @@
       document.getElementById("wage-rate").textContent = "$" + DATA.wage_per_hour.toFixed(2);
       document.getElementById("snapshot-meta").textContent =
         `Snapshot ${DATA.snapshot_date} · ${DATA.weeks.length} weeks (FY24–FY26)`;
+
+      // Populate all three chart range selectors from the data
+      populateRangeSelect("range-select",   "all",   { includeFY24: true,  includeLyOnly: false, includeAll: true });
+      populateRangeSelect("bps-range",      "fy26",  { includeFY24: false, includeLyOnly: true,  includeAll: false });
+      populateRangeSelect("savings-range",  "fy26",  { includeFY24: false, includeLyOnly: true,  includeAll: false });
 
       buildKPIs();
       buildEffChart();
@@ -378,10 +449,8 @@
     // -------- YoY bps bar chart --------
     function buildBpsChart() {
       const range = document.getElementById("bps-range").value;
-      let weeks;
-      if (range === "fy26") weeks = DATA.weeks.filter(w => w.fy === "FY2026");
-      else if (range === "fy25") weeks = DATA.weeks.filter(w => w.fy === "FY2025");
-      else weeks = DATA.weeks.filter(w => w.ly_eff_total_258 != null);
+      // Only weeks with LY comparison can produce a bps value
+      const weeks = applyRange(DATA.weeks, range).filter(w => w.ly_eff_total_258 != null);
 
       const labels = weeks.map(w => w.week_start);
       const bpsVals = weeks.map(w => yoyBps(w.eff_total_258, w.ly_eff_total_258));
@@ -431,10 +500,8 @@
     // -------- weekly savings bar chart --------
     function buildSavingsChart() {
       const range = document.getElementById("savings-range").value;
-      let weeks;
-      if (range === "fy26") weeks = DATA.weeks.filter(w => w.fy === "FY2026");
-      else if (range === "fy25") weeks = DATA.weeks.filter(w => w.fy === "FY2025");
-      else weeks = DATA.weeks.filter(w => w.wage_savings_vs_ly != null);
+      // Only weeks with LY comparison have a wage_savings_vs_ly value
+      const weeks = applyRange(DATA.weeks, range).filter(w => w.wage_savings_vs_ly != null);
 
       const labels = weeks.map(w => w.week_start);
       const vals = weeks.map(w => w.wage_savings_vs_ly);
